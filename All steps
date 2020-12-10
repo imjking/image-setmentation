@@ -1,1 +1,600 @@
+###step1
 
+'''
+模型：unet++
+加载模型权重
+按数据集预测
+'''
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+import tensorflow as tf
+from keras.backend.tensorflow_backend import set_session
+config = tf.ConfigProto()
+config.gpu_options.per_process_gpu_memory_fraction = 0.85
+set_session(tf.Session(config=config))  # 此处不同
+
+from keras.layers import *
+from keras import Model
+import skimage
+from skimage import io
+from skimage import morphology
+import numpy as np
+
+act = 'relu'
+network_height = 512
+network_width = 512
+overlap = 50
+class Predict(object):
+    def __init__(self, img_rows=512, img_cols=512, color_type=1, num_class=1,deep_supervision = False):
+        self.img_rows = img_rows
+        self.img_cols = img_cols
+        self.color_type = color_type
+        self.num_class = num_class
+        self.deep_supervision = deep_supervision
+
+    def Nestunet(self):
+        def standard_unit(input_tensor, stage, nb_filter, kernel_size=3):
+
+            x = Conv2D(nb_filter, (kernel_size, kernel_size), activation=act, name='conv' + stage + '_1',
+                       kernel_initializer='he_normal', border_mode='same')(input_tensor)
+            # x = Dropout(dropout_rate, name='dp'+stage+'_1')(x)
+            x = Conv2D(nb_filter, (kernel_size, kernel_size), activation=act, name='conv' + stage + '_2',
+                       kernel_initializer='he_normal', border_mode='same')(x)
+            # x = Dropout(dropout_rate, name='dp'+stage+'_2')(x)
+
+            return x
+
+        nb_filter = [32, 64, 128, 256, 512]
+
+        # Handle Dimension Ordering for different backends
+        '''
+        global bn_axis
+        if K.image_dim_ordering() == 'channels_last':
+          bn_axis = 3
+          img_input = Input(shape=(img_rows, img_cols, color_type), name='main_input')
+        else:
+          bn_axis = 1
+          img_input = Input(shape=(color_type, img_rows, img_cols), name='main_input')'''
+        img_input = Input(shape=(self.img_rows, self.img_cols, self.color_type))
+        conv1_1 = standard_unit(img_input, stage='11', nb_filter=nb_filter[0])
+        pool1 = MaxPooling2D((2, 2), strides=(2, 2), name='pool1')(conv1_1)
+
+        conv2_1 = standard_unit(pool1, stage='21', nb_filter=nb_filter[1])
+        pool2 = MaxPooling2D((2, 2), strides=(2, 2), name='pool2')(conv2_1)
+
+        up1_2 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up12', border_mode='same')(conv2_1)
+        conv1_2 = concatenate([up1_2, conv1_1], name='merge12', axis=3)
+        conv1_2 = standard_unit(conv1_2, stage='12', nb_filter=nb_filter[0])
+
+        conv3_1 = standard_unit(pool2, stage='31', nb_filter=nb_filter[2])
+        pool3 = MaxPooling2D((2, 2), strides=(2, 2), name='pool3')(conv3_1)
+
+        up2_2 = Conv2DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up22', border_mode='same')(conv3_1)
+        conv2_2 = concatenate([up2_2, conv2_1], name='merge22', axis=3)
+        conv2_2 = standard_unit(conv2_2, stage='22', nb_filter=nb_filter[1])
+
+        up1_3 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up13', border_mode='same')(conv2_2)
+        conv1_3 = concatenate([up1_3, conv1_1, conv1_2], name='merge13', axis=3)
+        conv1_3 = standard_unit(conv1_3, stage='13', nb_filter=nb_filter[0])
+
+        conv4_1 = standard_unit(pool3, stage='41', nb_filter=nb_filter[3])
+        pool4 = MaxPooling2D((2, 2), strides=(2, 2), name='pool4')(conv4_1)
+
+        up3_2 = Conv2DTranspose(nb_filter[2], (2, 2), strides=(2, 2), name='up32', border_mode='same')(conv4_1)
+        conv3_2 = concatenate([up3_2, conv3_1], name='merge32', axis=3)
+        conv3_2 = standard_unit(conv3_2, stage='32', nb_filter=nb_filter[2])
+
+        up2_3 = Conv2DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up23', border_mode='same')(conv3_2)
+        conv2_3 = concatenate([up2_3, conv2_1, conv2_2], name='merge23', axis=3)
+        conv2_3 = standard_unit(conv2_3, stage='23', nb_filter=nb_filter[1])
+
+        up1_4 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up14', border_mode='same')(conv2_3)
+        conv1_4 = concatenate([up1_4, conv1_1, conv1_2, conv1_3], name='merge14', axis=3)
+        conv1_4 = standard_unit(conv1_4, stage='14', nb_filter=nb_filter[0])
+
+        conv5_1 = standard_unit(pool4, stage='51', nb_filter=nb_filter[4])
+
+        up4_2 = Conv2DTranspose(nb_filter[3], (2, 2), strides=(2, 2), name='up42', border_mode='same')(conv5_1)
+        conv4_2 = concatenate([up4_2, conv4_1], name='merge42', axis=3)
+        conv4_2 = standard_unit(conv4_2, stage='42', nb_filter=nb_filter[3])
+
+        up3_3 = Conv2DTranspose(nb_filter[2], (2, 2), strides=(2, 2), name='up33', border_mode='same')(conv4_2)
+        conv3_3 = concatenate([up3_3, conv3_1, conv3_2], name='merge33', axis=3)
+        conv3_3 = standard_unit(conv3_3, stage='33', nb_filter=nb_filter[2])
+
+        up2_4 = Conv2DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up24', border_mode='same')(conv3_3)
+        conv2_4 = concatenate([up2_4, conv2_1, conv2_2, conv2_3], name='merge24', axis=3)
+        conv2_4 = standard_unit(conv2_4, stage='24', nb_filter=nb_filter[1])
+
+        up1_5 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up15', border_mode='same')(conv2_4)
+        conv1_5 = concatenate([up1_5, conv1_1, conv1_2, conv1_3, conv1_4], name='merge15', axis=3)
+        conv1_5 = standard_unit(conv1_5, stage='15', nb_filter=nb_filter[0])
+
+        nestnet_output_1 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_1',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_2)
+        nestnet_output_2 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_2',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_3)
+        nestnet_output_3 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_3',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_4)
+        nestnet_output_4 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_4',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_5)
+
+        if self.deep_supervision:
+            model = Model(input=img_input, output=[nestnet_output_1,
+                                                   nestnet_output_2,
+                                                   nestnet_output_3,
+                                                   nestnet_output_4])
+        else:
+            model = Model(input=img_input, output=[nestnet_output_3])
+
+        return model
+
+    def predict(self):
+        model = self.Nestunet()
+        model.summary()
+        print("predict W800 dataset")
+
+        # load weight
+        WeightPath = r'./logsSE'
+        WeightFiles = os.listdir(WeightPath)
+        WeightName = WeightFiles[len(WeightFiles) - 1]
+        model.load_weights(os.path.join(WeightPath, WeightName))
+
+        Dataset_path = r'H:\BaiduNetdiskDownload\W800\数据'
+        result_path = r'F:\W800\resultSE'
+        files = os.listdir(Dataset_path)
+        for k in range(0,len(files)):
+            # if (int(files[k]) == 126) | (int(files[k]) == 173):
+            #     continue
+            print('predict {}:',str(files[k]))
+            SubDataset_path = os.path.join(Dataset_path,str(files[k]),'SE小图')
+            Result_path = os.path.join(result_path,str(files[k]))
+            if not os.path.exists(Result_path):
+                os.makedirs(Result_path)
+            for imagefile in os.listdir(SubDataset_path):
+                image1 = skimage.io.imread(os.path.join(SubDataset_path, imagefile))
+                image2 = morphology.remove_small_objects(image1 > 0, min_size=1000000, connectivity=2, in_place=False)
+                [indx, indy] = np.where(image2 == 1)
+                minX = min(indx)
+                minY = min(indy)
+                maxX = max(indx)
+                maxY = max(indy)
+                image = image1[minX:maxX, minY:maxY]
+                image = image.astype('float32')
+
+                height, width = image.shape[0:2]
+                image = image.reshape(height, width, 1)
+                stitch_mask = np.zeros(shape=image.shape[0:2], dtype='uint8')
+                step_h = network_height - overlap
+                step_w = network_width - overlap
+                rows = (height - network_height) // step_h + 1
+                cols = (width - network_width) // step_w + 1
+                for k in range(rows + 1):
+                    if k == rows:
+                        start_i = height - network_height
+                    else:
+                        start_i = k * step_h
+                    for j in range(cols + 1):
+                        if j == cols:
+                            start_j = width - network_width
+                        else:
+                            start_j = j * step_w
+                        crop_img = image[start_i:start_i + network_height, start_j:start_j + network_width, :]
+                        crop_img = crop_img.astype('float32')
+                        mean = np.mean(crop_img)
+                        std = np.std(crop_img)
+                        crop_img -= mean
+                        crop_img /= std
+
+                        test = np.zeros(shape=(1, network_height, network_width, 1), dtype='float32')
+                        test[0, :, :, :] = crop_img
+                        crop_img = test
+                        results = model.predict(crop_img, verbose=1)
+                        results = results.reshape(1, 512, 512, 1)
+
+                        mask = results[0, :, :, 0]
+                        mask = mask > 0.5
+                        stitch_mask[start_i:start_i + network_height, start_j:start_j + network_width] = np.logical_or(
+                            mask,
+                            stitch_mask[
+                            start_i:start_i + network_height, start_j:start_j + network_width])
+                stitch_mask1 = np.zeros(shape=image1.shape[0:2], dtype='uint8')
+                stitch_mask1[minX:maxX, minY:maxY] = stitch_mask
+                io.imsave(os.path.join(Result_path,imagefile),(stitch_mask1*255).astype('uint8'))
+
+if __name__ == '__main__':
+    predict = Predict()
+    predict.predict()
+    
+    
+    
+    
+###step2
+'''
+模型:unet++
+加载模型权重
+按数据集预测
+'''
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+import tensorflow as tf
+from keras.backend.tensorflow_backend import set_session
+config = tf.ConfigProto()
+config.gpu_options.per_process_gpu_memory_fraction = 0.85
+set_session(tf.Session(config=config))  # 此处不同
+
+
+from keras.layers import *
+from keras import Model
+import skimage
+from skimage import io
+from skimage import morphology
+import numpy as np
+
+
+act = 'relu'
+network_height = 512
+network_width = 512
+overlap = 50
+class Predict(object):
+    def __init__(self, img_rows=512, img_cols=512, color_type=1, num_class=1,deep_supervision = False):
+        self.img_rows = img_rows
+        self.img_cols = img_cols
+        self.color_type = color_type
+        self.num_class = num_class
+        self.deep_supervision = deep_supervision
+
+    def Nestunet(self):
+        def standard_unit(input_tensor, stage, nb_filter, kernel_size=3):
+
+            x = Conv2D(nb_filter, (kernel_size, kernel_size), activation=act, name='conv' + stage + '_1',
+                       kernel_initializer='he_normal', border_mode='same')(input_tensor)
+            # x = Dropout(dropout_rate, name='dp'+stage+'_1')(x)
+            x = Conv2D(nb_filter, (kernel_size, kernel_size), activation=act, name='conv' + stage + '_2',
+                       kernel_initializer='he_normal', border_mode='same')(x)
+            # x = Dropout(dropout_rate, name='dp'+stage+'_2')(x)
+
+            return x
+
+        nb_filter = [32, 64, 128, 256, 512]
+
+        # Handle Dimension Ordering for different backends
+        '''
+        global bn_axis
+        if K.image_dim_ordering() == 'channels_last':
+          bn_axis = 3
+          img_input = Input(shape=(img_rows, img_cols, color_type), name='main_input')
+        else:
+          bn_axis = 1
+          img_input = Input(shape=(color_type, img_rows, img_cols), name='main_input')'''
+        img_input = Input(shape=(self.img_rows, self.img_cols, self.color_type))
+        conv1_1 = standard_unit(img_input, stage='11', nb_filter=nb_filter[0])
+        pool1 = MaxPooling2D((2, 2), strides=(2, 2), name='pool1')(conv1_1)
+
+        conv2_1 = standard_unit(pool1, stage='21', nb_filter=nb_filter[1])
+        pool2 = MaxPooling2D((2, 2), strides=(2, 2), name='pool2')(conv2_1)
+
+        up1_2 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up12', border_mode='same')(conv2_1)
+        conv1_2 = concatenate([up1_2, conv1_1], name='merge12', axis=3)
+        conv1_2 = standard_unit(conv1_2, stage='12', nb_filter=nb_filter[0])
+
+        conv3_1 = standard_unit(pool2, stage='31', nb_filter=nb_filter[2])
+        pool3 = MaxPooling2D((2, 2), strides=(2, 2), name='pool3')(conv3_1)
+
+        up2_2 = Conv2DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up22', border_mode='same')(conv3_1)
+        conv2_2 = concatenate([up2_2, conv2_1], name='merge22', axis=3)
+        conv2_2 = standard_unit(conv2_2, stage='22', nb_filter=nb_filter[1])
+
+        up1_3 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up13', border_mode='same')(conv2_2)
+        conv1_3 = concatenate([up1_3, conv1_1, conv1_2], name='merge13', axis=3)
+        conv1_3 = standard_unit(conv1_3, stage='13', nb_filter=nb_filter[0])
+
+        conv4_1 = standard_unit(pool3, stage='41', nb_filter=nb_filter[3])
+        pool4 = MaxPooling2D((2, 2), strides=(2, 2), name='pool4')(conv4_1)
+
+        up3_2 = Conv2DTranspose(nb_filter[2], (2, 2), strides=(2, 2), name='up32', border_mode='same')(conv4_1)
+        conv3_2 = concatenate([up3_2, conv3_1], name='merge32', axis=3)
+        conv3_2 = standard_unit(conv3_2, stage='32', nb_filter=nb_filter[2])
+
+        up2_3 = Conv2DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up23', border_mode='same')(conv3_2)
+        conv2_3 = concatenate([up2_3, conv2_1, conv2_2], name='merge23', axis=3)
+        conv2_3 = standard_unit(conv2_3, stage='23', nb_filter=nb_filter[1])
+
+        up1_4 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up14', border_mode='same')(conv2_3)
+        conv1_4 = concatenate([up1_4, conv1_1, conv1_2, conv1_3], name='merge14', axis=3)
+        conv1_4 = standard_unit(conv1_4, stage='14', nb_filter=nb_filter[0])
+
+        conv5_1 = standard_unit(pool4, stage='51', nb_filter=nb_filter[4])
+
+        up4_2 = Conv2DTranspose(nb_filter[3], (2, 2), strides=(2, 2), name='up42', border_mode='same')(conv5_1)
+        conv4_2 = concatenate([up4_2, conv4_1], name='merge42', axis=3)
+        conv4_2 = standard_unit(conv4_2, stage='42', nb_filter=nb_filter[3])
+
+        up3_3 = Conv2DTranspose(nb_filter[2], (2, 2), strides=(2, 2), name='up33', border_mode='same')(conv4_2)
+        conv3_3 = concatenate([up3_3, conv3_1, conv3_2], name='merge33', axis=3)
+        conv3_3 = standard_unit(conv3_3, stage='33', nb_filter=nb_filter[2])
+
+        up2_4 = Conv2DTranspose(nb_filter[1], (2, 2), strides=(2, 2), name='up24', border_mode='same')(conv3_3)
+        conv2_4 = concatenate([up2_4, conv2_1, conv2_2, conv2_3], name='merge24', axis=3)
+        conv2_4 = standard_unit(conv2_4, stage='24', nb_filter=nb_filter[1])
+
+        up1_5 = Conv2DTranspose(nb_filter[0], (2, 2), strides=(2, 2), name='up15', border_mode='same')(conv2_4)
+        conv1_5 = concatenate([up1_5, conv1_1, conv1_2, conv1_3, conv1_4], name='merge15', axis=3)
+        conv1_5 = standard_unit(conv1_5, stage='15', nb_filter=nb_filter[0])
+
+        nestnet_output_1 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_1',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_2)
+        nestnet_output_2 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_2',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_3)
+        nestnet_output_3 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_3',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_4)
+        nestnet_output_4 = Conv2D(self.num_class, (1, 1), activation='sigmoid', name='output_4',
+                                  kernel_initializer='he_normal', border_mode='same')(conv1_5)
+
+        if self.deep_supervision:
+            model = Model(input=img_input, output=[nestnet_output_1,
+                                                   nestnet_output_2,
+                                                   nestnet_output_3,
+                                                   nestnet_output_4])
+        else:
+            model = Model(input=img_input, output=[nestnet_output_3])
+
+        return model
+
+    def predict(self):
+        model = self.Nestunet()
+        model.summary()
+        print("predict W800 dataset")
+
+        # load weight
+        WeightPath = r'./logsHD'
+        WeightFiles = os.listdir(WeightPath)
+        WeightName = WeightFiles[len(WeightFiles) - 1]
+        model.load_weights(os.path.join(WeightPath, WeightName))
+
+        Dataset_path = r'H:\BaiduNetdiskDownload\W800\数据'
+        result_path = r'F:\W800\resultHD'
+        files = os.listdir(Dataset_path)
+        for k in range(0,len(files)):
+            if int(files[k]) != 125:
+                continue
+            print('predict {}:',str(files[k]))
+            SubDataset_path = os.path.join(Dataset_path,str(files[k]),'HD小图')
+            Result_path = os.path.join(result_path,str(files[k]))
+            if not os.path.exists(Result_path):
+                os.makedirs(Result_path)
+            for imagefile in os.listdir(SubDataset_path):
+                image1 = skimage.io.imread(os.path.join(SubDataset_path, imagefile))
+                image2 = morphology.remove_small_objects(image1 > 0, min_size=1000000, connectivity=2, in_place=False)
+                [indx, indy] = np.where(image2 == 1)
+                minX = min(indx)
+                minY = min(indy)
+                maxX = max(indx)
+                maxY = max(indy)
+                image = image1[minX:maxX, minY:maxY]
+                image = image.astype('float32')
+
+                height, width = image.shape[0:2]
+                image = image.reshape(height, width, 1)
+                stitch_mask = np.zeros(shape=image.shape[0:2], dtype='uint8')
+                step_h = network_height - overlap
+                step_w = network_width - overlap
+                rows = (height - network_height) // step_h + 1
+                cols = (width - network_width) // step_w + 1
+                for k in range(rows + 1):
+                    if k == rows:
+                        start_i = height - network_height
+                    else:
+                        start_i = k * step_h
+                    for j in range(cols + 1):
+                        if j == cols:
+                            start_j = width - network_width
+                        else:
+                            start_j = j * step_w
+                        crop_img = image[start_i:start_i + network_height, start_j:start_j + network_width, :]
+                        crop_img = crop_img.astype('float32')
+                        mean = np.mean(crop_img)
+                        std = np.std(crop_img)
+                        crop_img -= mean
+                        crop_img /= std
+
+                        test = np.zeros(shape=(1, network_height, network_width, 1), dtype='float32')
+                        test[0, :, :, :] = crop_img
+                        crop_img = test
+                        results = model.predict(crop_img, verbose=1)
+                        results = results.reshape(1, 512, 512, 1)
+
+                        mask = results[0, :, :, 0]
+                        mask = mask > 0.5
+                        stitch_mask[start_i:start_i + network_height, start_j:start_j + network_width] = np.logical_or(
+                            mask,
+                            stitch_mask[
+                            start_i:start_i + network_height, start_j:start_j + network_width])
+                stitch_mask1 = np.zeros(shape=image1.shape[0:2], dtype='uint8')
+                stitch_mask1[minX:maxX, minY:maxY] = stitch_mask
+                io.imsave(os.path.join(Result_path,imagefile),(stitch_mask1*255).astype('uint8'))
+
+if __name__ == '__main__':
+    predict = Predict()
+    predict.predict()
+
+
+###step3-
+'''
+根据老师给出的Excel文件判断哪些是没有ETA的，并将这些数据存成一个文件
+'''
+
+import numpy as np
+import cv2
+import os
+from skimage import io
+import skimage
+import xlrd
+from scipy import ndimage
+
+#find file without ETA
+def Step31():
+    ImagePath = r'H:\BaiduNetdiskDownload\W800\数据/'
+    LabelPath = r'G:\W800\result1/'
+    excelPath = r'C:\Users\Administrator\Desktop\W800/'
+    withOutEta = r'F:\withouteta'
+    for imageFold in os.listdir(LabelPath):
+        if imageFold == '123':
+            continue
+        subSEImagePath = os.path.join(ImagePath, imageFold, 'SE小图')
+        subLabelPath = os.path.join(LabelPath, imageFold)
+        excelFile = os.path.join(excelPath, 'W800_' + imageFold + '.xlsx')
+        WithOutEta = os.path.join(withOutEta, imageFold)
+        WithOutSE = r'F:\withoutse'
+        WithOutSE = os.path.join(WithOutSE, imageFold)
+
+        data = xlrd.open_workbook(excelFile)
+        table = data.sheet_by_index(0)
+        nrows = table.nrows
+        ncols = table.ncols
+
+        # 定义excel_list
+        excel_list = np.empty([nrows - 1, ncols], dtype=int)
+        for row in range(1, nrows):
+            for col in range(ncols):
+                # 获取单元格数据
+                cell_value = table.cell(row, col).value
+                # 把数据追加到excel_list中
+                excel_list[row - 1, col] = cell_value
+
+        for imagefile in os.listdir(subSEImagePath):
+            print('=' * 30)
+            print('imagefile:', imagefile)
+            print('=' * 30)
+            X = int(imagefile[0:4])
+            Y = int(imagefile[5:9])
+            ind = (excel_list[:, 1] == X) & (excel_list[:, 2] == Y)
+            ind = np.where(ind == True)
+            if excel_list[ind, 15] > 0:
+                continue
+            image = skimage.io.imread(os.path.join(subLabelPath, imagefile))
+            SEimage = skimage.io.imread(os.path.join(subSEImagePath, imagefile))
+            if not os.path.exists(WithOutEta):
+                os.makedirs(WithOutEta)
+                os.makedirs(WithOutSE)
+            cv2.imwrite(os.path.join(WithOutEta, imagefile), image.astype('uint8'))
+            cv2.imwrite(os.path.join(WithOutSE, imagefile), SEimage.astype('uint8'))
+
+###imgfilling
+def Step32():
+    SEpath = r'G:\W800\result1'
+    for files in os.listdir(SEpath):
+        if files != '125':
+            continue
+        for imagefile in os.listdir(os.path.join(SEpath, files)):
+            img = cv2.imread(os.path.join(SEpath, files, imagefile), 0)
+            fillimg = ndimage.binary_fill_holes(img).astype(int)
+            ImageFill = r'F:/W800/resultSE'
+            if not os.path.exists(ImageFill):
+                os.makedirs(ImageFill)
+            cv2.imwrite(os.path.join(ImageFill, str(files), imagefile), (fillimg * 255).astype('uint8'))
+
+if __name__ == '__main__':
+    Step31()
+    Step32()
+    
+    
+    
+    
+    
+    
+    
+    
+    
+ ###Step3
+ '''
+①加载第一步和第二步中在SE和HD上预测的结果
+②将SE和HD图上的连通域进行标注，然后按照HD上的ETA将SE上的相应部位给扣掉
+③第二步中根据老师给的有无ETA项的数据(Step3-中)，只将有ETA的进行扣除即可，再将结果放到SE预测结果中进行替换
+'''
+
+import cv2
+import numpy as np
+import os
+from skimage import morphology
+from skimage import measure
+
+def Step3():
+    # SEpath = r'G:\W800\result1'
+    SEpath = r'F:\W800\resultSE'
+    HDpath = r'F:\W800\resultHD'
+    WithoutetaPath = r'F:\withouteta'
+
+    for files in os.listdir(HDpath):
+        if int(files) != 125:
+            continue
+        result = []
+        subWithoutetaPath = os.path.join(WithoutetaPath, str(files))
+        for imagefile in os.listdir(subWithoutetaPath):
+            result.append(imagefile[-13:-4])
+        for imagefile1 in os.listdir(os.path.join(SEpath, str(files))):
+            if imagefile1[-13:-4] in result:
+                continue
+            img = cv2.imread(os.path.join(HDpath, str(files), imagefile1), 0)
+            img1 = cv2.imread(os.path.join(SEpath, str(files), imagefile1), 0)
+            img = morphology.remove_small_objects(img > 0, min_size=100, connectivity=2)
+            bw_img = measure.label(img)
+            bw_img1 = measure.label(img1)
+            for j in range(1, bw_img.max() + 1):
+                tem = bw_img1[bw_img == j]
+                tem = np.unique(tem)
+                for jj in range(0, len(tem)):
+                    bw_img1[bw_img1 == tem[jj]] = 0
+            resultPath = r'F:\W800\result2' + '/' + str(files)
+            if not os.path.exists(resultPath):
+                os.makedirs(resultPath)
+            cv2.imwrite(resultPath + '/' + str(imagefile1[-13:-4]) + '.tif', bw_img1)
+
+
+if __name__ == '__main__':
+    Step3()
+
+
+
+###运行step3之前，先运行step3-
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
